@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>掃描圖卡看 3D 模型</title>
+  <script src="https://aframe.io/releases/1.6.0/aframe.min.js"></script>
+  <script src="https://raw.githack.com/AR-js-org/AR.js/3.4.8/aframe/build/aframe-ar.js"></script>
+  <style>
+    html,body { margin:0; width:100%; height:100%; overflow:hidden; font-family:Arial,"Noto Sans TC",sans-serif; background:#0c1324; color:white; }
+    #intro { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; padding:20px; box-sizing:border-box; z-index:40; background:#0c1324; }
+    #panel { max-width:410px; width:100%; padding:28px 22px; border-radius:18px; background:#1d2b49; text-align:center; box-sizing:border-box; }
+    h1 { font-size:23px; margin:0 0 14px; }
+    p { line-height:1.8; font-size:15px; }
+    button { background:#61c3b2; color:#092331; border:0; padding:14px 24px; border-radius:10px; font-size:17px; font-weight:bold; width:100%; margin-top:14px; }
+    button:disabled { opacity:.45; }
+    a { color:#8be5fb; }
+    #hud { position:fixed; top:12px; left:12px; right:12px; z-index:50; pointer-events:none; display:none; }
+    #hud p { margin:0; background:#101c36dd; display:inline-block; padding:10px 13px; border-radius:10px; font-size:14px; }
+    a-scene { position:fixed !important; inset:0; }
+    .small { color:#b9c7de; font-size:13px; }
+  </style>
+</head>
+<body>
+  <section id="intro">
+    <div id="panel">
+      <h1>AR 3D 模型展示</h1>
+      <p id="status" role="status">正在從 GAS 讀取最新模型…</p>
+      <button id="start" disabled>開始 AR 掃描</button>
+      <p class="small">使用手機 Safari 或 Chrome，允許相機權限，再對準 Hiro 圖卡。</p>
+      <p class="small"><a href="https://raw.githubusercontent.com/AR-js-org/AR.js/master/data/images/hiro.png" target="_blank" rel="noopener">查看／列印 Hiro 圖卡</a>（請用另一個螢幕或紙張顯示）</p>
+    </div>
+  </section>
+  <div id="hud"><p id="hint">將鏡頭對準 Hiro 圖卡…</p></div>
+
+  <script>
+    // ★★★ 必改：貼上你自己的 GAS 網頁應用程式 /exec 網址 ★★★
+    const GAS_URL = 'PASTE_YOUR_GAS_WEB_APP_EXEC_URL_HERE';
+    let modelBlobUrl = null;
+    const startButton = document.getElementById('start');
+    const status = document.getElementById('status');
+    const hint = document.getElementById('hint');
+    let loadTimeout = null;
+
+    AFRAME.registerComponent('fit-glb', {
+      init: function () {
+        this.el.addEventListener('model-loaded', () => {
+          const mesh = this.el.getObject3D('mesh');
+          if (!mesh) return;
+          mesh.updateMatrixWorld(true);
+          const bounds = new THREE.Box3().setFromObject(mesh);
+          const size = bounds.getSize(new THREE.Vector3());
+          const center = bounds.getCenter(new THREE.Vector3());
+          const longest = Math.max(size.x, size.y, size.z);
+          if (!isFinite(longest) || longest <= 0) return;
+          const scale = 0.8 / longest;
+          mesh.scale.multiplyScalar(scale);
+          mesh.position.x -= center.x * scale;
+          mesh.position.y -= bounds.min.y * scale;
+          mesh.position.z -= center.z * scale;
+        });
+      }
+    });
+
+    window.arModelReady = function (data) {
+      clearTimeout(loadTimeout);
+      if (!data || !data.ok) {
+        status.textContent = '讀取失敗：' + (data && data.error ? data.error : '無法取得模型');
+        return;
+      }
+      try {
+        const binary = atob(data.base64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        modelBlobUrl = URL.createObjectURL(new Blob([bytes], { type: 'model/gltf-binary' }));
+        status.textContent = '已載入模型：' + data.name + '。點選下方按鈕開始掃描。';
+        startButton.disabled = false;
+      } catch (err) {
+        status.textContent = '模型解碼失敗：' + err.message;
+      }
+    };
+
+    function loadLatestModel() {
+      if (!/^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec(?:\?.*)?$/.test(GAS_URL)) {
+        status.textContent = '請先將 index.html 中的 GAS_URL 改成你的 GAS /exec 網址。';
+        return;
+      }
+      loadTimeout = setTimeout(() => {
+        status.textContent = '讀取逾時，請確認 GAS 已部署為「所有人」，並已上傳模型。';
+      }, 30000);
+      const script = document.createElement('script');
+      script.src = GAS_URL + (GAS_URL.includes('?') ? '&' : '?') +
+        'action=model&callback=arModelReady&t=' + Date.now();
+      script.onerror = () => {
+        clearTimeout(loadTimeout);
+        status.textContent = '無法連線至 GAS；請檢查部署網址與公開存取設定。';
+      };
+      document.head.appendChild(script);
+    }
+
+    startButton.addEventListener('click', () => {
+      if (!modelBlobUrl) return;
+      startButton.disabled = true;
+      document.getElementById('intro').style.display = 'none';
+      document.getElementById('hud').style.display = 'block';
+
+      const scene = document.createElement('a-scene');
+      scene.setAttribute('embedded', '');
+      scene.setAttribute('arjs', 'sourceType: webcam; debugUIEnabled: false;');
+      scene.setAttribute('vr-mode-ui', 'enabled: false');
+      scene.setAttribute('device-orientation-permission-ui', 'enabled: false');
+      scene.innerHTML = '<a-marker id="marker" preset="hiro" emitevents="true">' +
+        '<a-entity id="glbObject" fit-glb></a-entity>' +
+        '</a-marker><a-entity camera></a-entity>';
+      document.body.appendChild(scene);
+
+      const marker = scene.querySelector('#marker');
+      const object = scene.querySelector('#glbObject');
+      marker.addEventListener('markerFound', () => {
+        hint.textContent = '已辨識圖卡！請移動手機觀看模型。';
+      });
+      marker.addEventListener('markerLost', () => {
+        hint.textContent = '請將鏡頭重新對準 Hiro 圖卡…';
+      });
+      object.addEventListener('model-loaded', () => {
+        hint.textContent = '模型已準備完成，請將鏡頭對準 Hiro 圖卡。';
+      });
+      object.addEventListener('model-error', () => {
+        hint.textContent = '模型無法顯示，請確認 GLB 檔案是否有效。';
+      });
+      object.setAttribute('gltf-model', modelBlobUrl);
+    });
+
+    loadLatestModel();
+  </script>
+</body>
+</html>
